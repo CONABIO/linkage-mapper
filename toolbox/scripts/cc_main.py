@@ -19,15 +19,22 @@ import itertools
 import traceback
 from datetime import datetime
 
-import arcinfo  # Import arcinfo license. Needed before arcpy import.
-import arcpy
-import arcpy.sa as sa
+# import arcinfo  # Import arcinfo license. Needed before arcpy import.
+# import arcpy
+# import arcpy.sa as sa
 
 from cc_config import cc_env
 import cc_util
 import lm_master
 from lm_config import tool_env as lm_env
 import lm_util
+
+# ----
+import rasterio
+import rasterio.warp import (calculate_default_transform,
+                             reproject,
+                             Resampling)
+# ----
 
 _SCRIPT_NAME = "cc_main.py"
 
@@ -168,72 +175,120 @@ def cc_copy_inputs():
     """Clip Climate Linkage Mapper inputs to smallest extent"""
     ext_poly = os.path.join(cc_env.out_dir, "ext_poly.shp")  # Extent polygon
     try:
-        lm_util.gprint("\nCOPYING LAYERS AND, IF NECESSARY, REDUCING EXTENT")
-        if not arcpy.Exists(cc_env.inputs_gdb):
-            arcpy.CreateFileGDB_management(os.path.dirname(cc_env.inputs_gdb),
-                                           os.path.basename(cc_env.inputs_gdb))
-        climate_extent = arcpy.Raster(cc_env.climate_rast).extent
+        # lm_util.gprint("\nCOPYING LAYERS AND, IF NECESSARY, REDUCING EXTENT")
+        # if not arcpy.Exists(cc_env.inputs_gdb):
+        #     arcpy.CreateFileGDB_management(os.path.dirname(cc_env.inputs_gdb),
+        #                                    os.path.basename(cc_env.inputs_gdb))
+        # climate_extent = arcpy.Raster(cc_env.climate_rast).extent
+        cc_climate = rasterio.open(cc_env.climate_ras)
+        climate_extent = cc_climate.bounds
 
         if cc_env.resist_rast is not None:
-            resist_extent = arcpy.Raster(cc_env.resist_rast).extent
-            xmin = max(climate_extent.XMin, resist_extent.XMin)
-            ymin = max(climate_extent.YMin, resist_extent.YMin)
-            xmax = min(climate_extent.XMax, resist_extent.XMax)
-            ymax = min(climate_extent.YMax, resist_extent.YMax)
+            # resist_extent = arcpy.Raster(cc_env.resist_rast).extent
+            cc_resist = rasterio.open(cc_env.resist_rast)
+            resist_extent = cc_resist.bounds
+
+            xmin = max(climate_extent.left, resist_extent.left)
+            ymin = max(climate_extent.bottom, resist_extent.bottom)
+            xmax = min(climate_extent.right resist_extent.right)
+            ymax = min(climate_extent.top resist_extent.top)
 
             # Set to minimum extent if resistance raster was given
-            arcpy.env.extent = arcpy.Extent(xmin, ymin, xmax, ymax)
+            minimum_extent = rasterio.coords.BoundingBox(xmin,
+                ymin,
+                xmax,
+                ymax)
 
             # Want climate and resistance rasters in same spatial ref
             # with same nodata cells
-            proj_resist_rast = sa.Con(
-                sa.IsNull(cc_env.climate_rast),
-                sa.Int(cc_env.climate_rast), cc_env.resist_rast)
             proj_resist_rast.save(cc_env.prj_resist_rast)
-        else:
-            xmin = climate_extent.XMin
-            ymin = climate_extent.YMin
-            xmax = climate_extent.XMax
-            ymax = climate_extent.YMax
+            nodata_climate_rast = cc_climate.nodata
 
+            dst_crs = cc_climate.crs
+            profile = cc_resist.profile
+            dst_affine, dst_width, dst_height = calculate_default_transform(
+                cc_resist.crs, dst_crs, cc_resist.width, cc_resist.height,
+                *cc_resist.bounds)
+            profile.update({
+                'crs': dst_crs,
+                'transform': dst_affine,
+                'affine': dst_affine,
+                'width': dst_width,
+                'height': dst_height,
+                'nodata': nodata_climate_rast
+                })
+
+            with rasterio.open(cc_env.prj_resist_rast, 'w', **profile) as dst:
+                src_array = cc_resist.read(1)
+                dst_array = np.empty((dst_height, dst_width), dtype='float32')
+
+                reproject(
+                    # Source parameters
+                    source=src_array,
+                    src_crs=cc_resist.crs,
+                    src_transform=cc_resist.affine,
+                    # Destination paramaters
+                    destination=dst_array,
+                    dst_transform=dst_affine,
+                    dst_crs=dst_crs,
+                    # Configuration
+                    resampling=Resampling.nearest,
+                    num_threads=2)
+
+                dst.write(dst_array, 1)
+        else:
+            xmin = climate_extent.left
+            ymin = climate_extent.bottom
+            xmax = climate_extent.right
+            ymax = climate_extent.top
+
+            ones_resist_array = np.ones((cc_climate.height,
+                                         cc_climate.width), dtype='float32')
+            cc_climate_mask = cc_climate.read_masks(1)
+
+            profile = cc_climate.profile
+
+            with rasterio.open(cc_env.prj_resist_rast, 'w', **profile) as dst:
+                dst.write(ones_resist_array, 1)
+                dst.write_mask(cc_climate_mask)
             ones_resist_rast = sa.Con(
                 sa.IsNull(cc_env.climate_rast),
                 sa.Int(cc_env.climate_rast), 1)
             ones_resist_rast.save(cc_env.prj_resist_rast)
 
-        arcpy.CopyRaster_management(cc_env.climate_rast,
-                                    cc_env.prj_climate_rast)
-
-        # Create core raster
-        arcpy.env.extent = arcpy.Extent(xmin, ymin, xmax, ymax)
-        lm_util.delete_data(cc_env.prj_core_rast)
-        arcpy.FeatureToRaster_conversion(
-            cc_env.core_fc, cc_env.core_fld,
-            cc_env.prj_core_rast,
-            arcpy.Describe(cc_env.climate_rast).MeanCellHeight)
-        arcpy.env.extent = None
-
-        # Create array of boundary points
-        array = arcpy.Array()
-        pnt = arcpy.Point(xmin, ymin)
-        array.add(pnt)
-        pnt = arcpy.Point(xmax, ymin)
-        array.add(pnt)
-        pnt = arcpy.Point(xmax, ymax)
-        array.add(pnt)
-        pnt = arcpy.Point(xmin, ymax)
-        array.add(pnt)
-        # Add in the first point of the array again to close polygon boundary
-        array.add(array.getObject(0))
-        # Create a polygon geometry object using the array object
-        ext_feat = arcpy.Polygon(array)
-        arcpy.CopyFeatures_management(ext_feat, ext_poly)
-        # Clip core feature class
-        arcpy.Clip_analysis(cc_env.core_fc, ext_poly, cc_env.prj_core_fc)
+        # arcpy.CopyRaster_management(cc_env.climate_rast,
+        #                             cc_env.prj_climate_rast)
+        #
+        # # Create core raster
+        # arcpy.env.extent = arcpy.Extent(xmin, ymin, xmax, ymax)
+        # lm_util.delete_data(cc_env.prj_core_rast)
+        # arcpy.FeatureToRaster_conversion(
+        #     cc_env.core_fc, cc_env.core_fld,
+        #     cc_env.prj_core_rast,
+        #     arcpy.Describe(cc_env.climate_rast).MeanCellHeight)
+        # arcpy.env.extent = None
+        #
+        # # Create array of boundary points
+        # array = arcpy.Array()
+        # pnt = arcpy.Point(xmin, ymin)
+        # array.add(pnt)
+        # pnt = arcpy.Point(xmax, ymin)
+        # array.add(pnt)
+        # pnt = arcpy.Point(xmax, ymax)
+        # array.add(pnt)
+        # pnt = arcpy.Point(xmin, ymax)
+        # array.add(pnt)
+        # # Add in the first point of the array again to close polygon boundary
+        # array.add(array.getObject(0))
+        # # Create a polygon geometry object using the array object
+        # ext_feat = arcpy.Polygon(array)
+        # arcpy.CopyFeatures_management(ext_feat, ext_poly)
+        # # Clip core feature class
+        # arcpy.Clip_analysis(cc_env.core_fc, ext_poly, cc_env.prj_core_fc)
     except Exception:
         raise
-    finally:
-        cc_util.delete_features(ext_poly)
+    # finally:
+        # cc_util.delete_features(ext_poly)
 
 
 def create_pair_tbl(climate_stats):
