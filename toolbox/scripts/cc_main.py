@@ -145,6 +145,8 @@ def run_analysis():
 
     # Get zonal statistics for cores and climate
     lm_util.gprint("\nCALCULATING ZONAL STATISTICS FROM CLIMATE RASTER")
+
+    # http://pro.arcgis.com/en/pro-app/tool-reference/spatial-analyst/zonal-statistics-as-table.htm
     climate_stats = arcpy.sa.ZonalStatisticsAsTable(
         cc_env.prj_core_fc, cc_env.core_fld, cc_env.prj_climate_rast,
         zonal_tbl, "DATA", "ALL")
