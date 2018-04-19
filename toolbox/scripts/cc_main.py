@@ -147,6 +147,14 @@ def run_analysis():
     lm_util.gprint("\nCALCULATING ZONAL STATISTICS FROM CLIMATE RASTER")
 
     # http://pro.arcgis.com/en/pro-app/tool-reference/spatial-analyst/zonal-statistics-as-table.htm
+    # Toma el raster clima saca las estadisticas en cada parche:
+    # - media
+    # - sd
+    # - min
+    # - max
+    # - rango = max-min
+    # - suma = suma de pixeles
+    #  FID | media | sd | min | max | ...
     climate_stats = arcpy.sa.ZonalStatisticsAsTable(
         cc_env.prj_core_fc, cc_env.core_fld, cc_env.prj_climate_rast,
         zonal_tbl, "DATA", "ALL")
@@ -183,6 +191,7 @@ def cc_copy_inputs():
         #                                    os.path.basename(cc_env.inputs_gdb))
         # climate_extent = arcpy.Raster(cc_env.climate_rast).extent
         cc_climate = rasterio.open(cc_env.climate_ras)
+        cc_climate_meta = cc_climate.meta.copy()
         climate_extent = cc_climate.bounds
 
         if cc_env.resist_rast is not None:
