@@ -31,9 +31,14 @@ import lm_util
 
 # ----
 import rasterio
-import rasterio.warp import (calculate_default_transform,
+from rasterio.warp import (calculate_default_transform,
                              reproject,
                              Resampling)
+from rasterio import features
+import geopandas as gpd
+import numpy as np
+from shapely.geometry import box
+import logging
 # ----
 
 _SCRIPT_NAME = "cc_main.py"
@@ -42,6 +47,10 @@ TFORMAT = "%m/%d/%y %H:%M:%S"
 
 FR_COL = "From_Core"
 TO_COL = "To_Core"
+
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 def main(argv=None):
@@ -148,6 +157,8 @@ def run_analysis():
 
     # http://pro.arcgis.com/en/pro-app/tool-reference/spatial-analyst/zonal-statistics-as-table.htm
     # Toma el raster clima saca las estadisticas en cada parche:
+    # - count
+    # - area
     # - media
     # - sd
     # - min
@@ -182,27 +193,27 @@ def run_analysis():
 
 
 def cc_copy_inputs():
-    """Clip Climate Linkage Mapper inputs to smallest extent"""
+    """Clip Climate Linkage Mapper inputs to smallest extent
+
+    Copy and transform every input data to a common extent and  resolution,
+    this includes climate raster, resistance ratser and cores features.
+    """
     ext_poly = os.path.join(cc_env.out_dir, "ext_poly.shp")  # Extent polygon
     try:
-        # lm_util.gprint("\nCOPYING LAYERS AND, IF NECESSARY, REDUCING EXTENT")
-        # if not arcpy.Exists(cc_env.inputs_gdb):
-        #     arcpy.CreateFileGDB_management(os.path.dirname(cc_env.inputs_gdb),
-        #                                    os.path.basename(cc_env.inputs_gdb))
-        # climate_extent = arcpy.Raster(cc_env.climate_rast).extent
+        logger.info("\nCOPYING LAYERS AND, IF NECESSARY, REDUCING EXTENT")
+
         cc_climate = rasterio.open(cc_env.climate_ras)
         cc_climate_meta = cc_climate.meta.copy()
         climate_extent = cc_climate.bounds
 
         if cc_env.resist_rast is not None:
-            # resist_extent = arcpy.Raster(cc_env.resist_rast).extent
             cc_resist = rasterio.open(cc_env.resist_rast)
             resist_extent = cc_resist.bounds
 
             xmin = max(climate_extent.left, resist_extent.left)
             ymin = max(climate_extent.bottom, resist_extent.bottom)
-            xmax = min(climate_extent.right resist_extent.right)
-            ymax = min(climate_extent.top resist_extent.top)
+            xmax = min(climate_extent.right, resist_extent.right)
+            ymax = min(climate_extent.top, resist_extent.top)
 
             # Set to minimum extent if resistance raster was given
             minimum_extent = rasterio.coords.BoundingBox(xmin,
@@ -212,7 +223,6 @@ def cc_copy_inputs():
 
             # Want climate and resistance rasters in same spatial ref
             # with same nodata cells
-            proj_resist_rast.save(cc_env.prj_resist_rast)
             nodata_climate_rast = cc_climate.nodata
 
             dst_crs = cc_climate.crs
@@ -267,39 +277,47 @@ def cc_copy_inputs():
                 sa.Int(cc_env.climate_rast), 1)
             ones_resist_rast.save(cc_env.prj_resist_rast)
 
-        # arcpy.CopyRaster_management(cc_env.climate_rast,
-        #                             cc_env.prj_climate_rast)
-        #
-        # # Create core raster
-        # arcpy.env.extent = arcpy.Extent(xmin, ymin, xmax, ymax)
-        # lm_util.delete_data(cc_env.prj_core_rast)
-        # arcpy.FeatureToRaster_conversion(
-        #     cc_env.core_fc, cc_env.core_fld,
-        #     cc_env.prj_core_rast,
-        #     arcpy.Describe(cc_env.climate_rast).MeanCellHeight)
-        # arcpy.env.extent = None
-        #
-        # # Create array of boundary points
-        # array = arcpy.Array()
-        # pnt = arcpy.Point(xmin, ymin)
-        # array.add(pnt)
-        # pnt = arcpy.Point(xmax, ymin)
-        # array.add(pnt)
-        # pnt = arcpy.Point(xmax, ymax)
-        # array.add(pnt)
-        # pnt = arcpy.Point(xmin, ymax)
-        # array.add(pnt)
-        # # Add in the first point of the array again to close polygon boundary
-        # array.add(array.getObject(0))
-        # # Create a polygon geometry object using the array object
-        # ext_feat = arcpy.Polygon(array)
-        # arcpy.CopyFeatures_management(ext_feat, ext_poly)
-        # # Clip core feature class
-        # arcpy.Clip_analysis(cc_env.core_fc, ext_poly, cc_env.prj_core_fc)
+
+        # Create core raster
+        cores_gpd = gpd.read_file(cc_env.core_fc)
+        cores_it = ((feat[1].geometry, feat[1][cc_env.core_fld])
+                   for feat in cores_gpd.iterrows())
+
+        cores_im = features.rasterize(cores_it,
+                                      out_shape=cc_climate.shape,
+                                      transform=cc_climate.transform)
+
+        cores_profile = cc_climate.meta.copy()
+        cores_profile.update({
+            'nodata': 0,
+            'driver': 'HFA',
+            'count': 1,
+            'dtype': rasterio.uint8
+        })
+
+        with rasterio.open(cc_env.prj_core_rast, 'w',
+                           **cores_profile) as dst:
+            dst.write(cores_im, indexes=1)
+
+        # Create boundary box
+        ext_feat = box(610056.2425,
+                       686239.224588,
+                       842393.482691,
+                       882993.283848)
+
+        # Clip core feature class
+        ext_gdf = gpd.GeoDataFrame(gpd.GeoSeries(ext_feat),
+                                   columns=["geometry"],
+                                   crs = cc_climate.crs)
+
+        ext_gdf.to_file('box.shp')
+        cores_clip = gpd.overlay(ext_gdf, cores_gpd, how="intersection")
+
+        cores_clip.crs = cores_gpd.crs
+        cores_clip.to_file(cc_env.prj_core_fc)
+
     except Exception:
         raise
-    # finally:
-        # cc_util.delete_features(ext_poly)
 
 
 def create_pair_tbl(climate_stats):
@@ -592,8 +610,8 @@ def print_runtime(stime):
     rtime = etime - stime
     hours, minutes = ((rtime.days * 24 + rtime.seconds // 3600),
                       (rtime.seconds // 60) % 60)
-    print "End time: %s" % etime.strftime(TFORMAT)
-    print "Elapsed time: %s hrs %s mins" % (hours, minutes)
+    #print "End time: %s" % etime.strftime(TFORMAT)
+    #print "Elapsed time: %s hrs %s mins" % (hours, minutes)
 
 
 if __name__ == "__main__":
