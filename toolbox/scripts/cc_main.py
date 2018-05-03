@@ -162,14 +162,20 @@ def run_analysis():
 
     # http://pro.arcgis.com/en/pro-app/tool-reference/spatial-analyst/zonal-statistics-as-table.htm
     # Toma el raster clima saca las estadisticas en cada parche:
+    # - ID
+    # - value
     # - count
     # - area
-    # - media
-    # - sd
     # - min
     # - max
     # - rango = max-min
+    # - media
+    # - sd
     # - suma = suma de pixeles
+    # - variety
+    # - Majority
+    # - Minority
+    # - Median
     #  FID | media | sd | min | max | ...
     climate_stats = pd.DataFrame(zonal_stats(
         cc_env.prj_core_fc,
@@ -184,13 +190,16 @@ def run_analysis():
     # Generate link table, calculate CWD and run Linkage Mapper
     if int(arcpy.GetCount_management(core_pairings).getOutput(0)) == 0:
         lm_util.warn("\nNo core pairs within climate threshold. "
-                         "Program will end")
+                         "Program will end")}
+# Cuenta el numero de filas de la tabla core_parings.
+# https://pro.arcgis.com/es/pro-app/tool-reference/data-management/get-count.htm
     else:
         # Process pairings and generate link table
         grass_cores = process_pairings(core_pairings)
         if not grass_cores:
             lm_util.warn("\nNo core pairs within Euclidean distances. "
                              "Progam will end")
+
         else:
             # Create CWD using Grass
             cc_grass_cwd.grass_cwd(grass_cores)
@@ -331,10 +340,12 @@ def cc_copy_inputs():
 def create_pair_tbl(climate_stats):
     """Create core pair table and limit to climate threshold """
     cpair_tbl = pair_cores("corepairs.dbf")
+#  Crea tabla con ID de los parches y su valor correspondiente de climate_stats()
     if int(arcpy.GetCount_management(cpair_tbl).getOutput(0)) > 0:
         limit_cores(cpair_tbl, climate_stats)
     return cpair_tbl
-
+# Devuelve el número total de filas de una tabla:
+# https://pro.arcgis.com/es/pro-app/tool-reference/data-management/get-count.htm
 
 def pair_cores(cpair_tbl):
     """Create table with all possible core to core combinations"""
@@ -343,14 +354,21 @@ def pair_cores(cpair_tbl):
     try:
         lm_util.gprint("\nCREATING CORE PAIRINGS TABLE")
         arcpy.CreateTable_management(cc_env.out_dir, cpair_tbl, "", "")
+    # Crea tabla https://pro.arcgis.com/es/pro-app/tool-reference/data-management/create-table.htm
         arcpy.AddField_management(cpair_tbl, FR_COL, "Long", "", "",
                                   "", "", "NON_NULLABLE")
+# Agrega campo "From_col" https://pro.arcgis.com/es/pro-app/tool-reference/data-management/add-field.htm
         arcpy.AddField_management(cpair_tbl, TO_COL, "Long", "", "",
                                   "", "", "NON_NULLABLE")
+ # Agrega campo "To_col" https://pro.arcgis.com/es/pro-app/tool-reference/data-management/add-field.htm
+
         arcpy.DeleteField_management(cpair_tbl, "Field1")
+# Elimina el campo Field1 que seguramente no tiene información y se genero por error
+#https://pro.arcgis.com/es/pro-app/tool-reference/data-management/delete-field.htm
 
         srows = arcpy.SearchCursor(cc_env.prj_core_fc, "", "",
                                    cc_env.core_fld, cc_env.core_fld + " A")
+# https://pro.arcgis.com/es/pro-app/arcpy/functions/searchcursor.htm
 
         cores_list = [srow.getValue(cc_env.core_fld) for srow in srows]
         cores_product = list(itertools.combinations(cores_list, 2))
