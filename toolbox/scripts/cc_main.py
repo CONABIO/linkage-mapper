@@ -39,6 +39,9 @@ import geopandas as gpd
 import numpy as np
 from shapely.geometry import box
 import logging
+from rasterstats import zonal_stats
+from rasterstats.utils import VALID_STATS
+import pandas as pd
 # ----
 
 _SCRIPT_NAME = "cc_main.py"
@@ -155,7 +158,7 @@ def run_analysis():
     cc_copy_inputs()  # Clip inputs and create project area raster
 
     # Get zonal statistics for cores and climate
-    lm_util.gprint("\nCALCULATING ZONAL STATISTICS FROM CLIMATE RASTER")
+    logger.info("\nCALCULATING ZONAL STATISTICS FROM CLIMATE RASTER")
 
     # http://pro.arcgis.com/en/pro-app/tool-reference/spatial-analyst/zonal-statistics-as-table.htm
     # Toma el raster clima saca las estadisticas en cada parche:
@@ -168,9 +171,12 @@ def run_analysis():
     # - rango = max-min
     # - suma = suma de pixeles
     #  FID | media | sd | min | max | ...
-    climate_stats = arcpy.sa.ZonalStatisticsAsTable(
-        cc_env.prj_core_fc, cc_env.core_fld, cc_env.prj_climate_rast,
-        zonal_tbl, "DATA", "ALL")
+    climate_stats = pd.DataFrame(zonal_stats(
+        cc_env.prj_core_fc,
+        cc_env.prj_climate_rast,
+        stats=VALID_STATS
+    ))
+
 
     # Create core pairings table and limit based upon climate threshold
     core_pairings = create_pair_tbl(climate_stats)
