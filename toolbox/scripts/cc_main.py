@@ -153,7 +153,7 @@ def run_analysis():
     """Run Climate Linkage Mapper analysis"""
     import cc_grass_cwd  # Cannot import until configured
 
-    zonal_tbl = "zstats.dbf"
+    zonal_tbl = "zstats.csv"
 
     cc_copy_inputs()  # Clip inputs and create project area raster
 
@@ -182,6 +182,7 @@ def run_analysis():
         cc_env.prj_climate_rast,
         stats=VALID_STATS
     ))
+    climate_stats.to_csv(zonal_tbl)
 
 
     # Create core pairings table and limit based upon climate threshold
@@ -339,7 +340,7 @@ def cc_copy_inputs():
 
 def create_pair_tbl(climate_stats):
     """Create core pair table and limit to climate threshold """
-    cpair_tbl = pair_cores("corepairs.dbf")
+    cpair_tbl = pair_cores("corepairs.csv")
 #  Crea tabla con ID de los parches y su valor correspondiente de climate_stats()
     if int(arcpy.GetCount_management(cpair_tbl).getOutput(0)) > 0:
         limit_cores(cpair_tbl, climate_stats)
@@ -349,51 +350,25 @@ def create_pair_tbl(climate_stats):
 
 def pair_cores(cpair_tbl):
     """Create table with all possible core to core combinations"""
-    srows, outputrow, irows = None, None, None
-
     try:
-        lm_util.gprint("\nCREATING CORE PAIRINGS TABLE")
-        arcpy.CreateTable_management(cc_env.out_dir, cpair_tbl, "", "")
-    # Crea tabla https://pro.arcgis.com/es/pro-app/tool-reference/data-management/create-table.htm
-        arcpy.AddField_management(cpair_tbl, FR_COL, "Long", "", "",
-                                  "", "", "NON_NULLABLE")
-# Agrega campo "From_col" https://pro.arcgis.com/es/pro-app/tool-reference/data-management/add-field.htm
-        arcpy.AddField_management(cpair_tbl, TO_COL, "Long", "", "",
-                                  "", "", "NON_NULLABLE")
- # Agrega campo "To_col" https://pro.arcgis.com/es/pro-app/tool-reference/data-management/add-field.htm
+        logger.info("\nCREATING CORE PAIRINGS TABLE")
 
-        arcpy.DeleteField_management(cpair_tbl, "Field1")
-# Elimina el campo Field1 que seguramente no tiene información y se genero por error
-#https://pro.arcgis.com/es/pro-app/tool-reference/data-management/delete-field.htm
+        cores_gdf = gpd.read_file(cc_env.prj_core_fc)
 
-        srows = arcpy.SearchCursor(cc_env.prj_core_fc, "", "",
-                                   cc_env.core_fld, cc_env.core_fld + " A")
-# https://pro.arcgis.com/es/pro-app/arcpy/functions/searchcursor.htm
-
-        cores_list = [srow.getValue(cc_env.core_fld) for srow in srows]
+        cores_list = cores_gdf[cc_env.core_fld].tolist().sort()
         cores_product = list(itertools.combinations(cores_list, 2))
 
-        lm_util.gprint("There are " + str(len(cores_list)) + " unique "
+        logger.info("There are " + str(len(cores_list)) + " unique "
                        "cores and " + str(len(cores_product)) + " pairings")
 
-        irows = arcpy.InsertCursor(cpair_tbl)
-        for nrow in cores_product:
-            outputrow = irows.newRow()
-            outputrow.setValue(FR_COL, int(nrow[0]))
-            outputrow.setValue(TO_COL, int(nrow[1]))
-            irows.insertRow(outputrow)
+        pair_df = pd.DataFrame.from_records(cores_product)
+        pair_df.columns = ("FR_COL", "TO_COL")
+        pair_df.to_csv(cpair_tbl)
 
         return cpair_tbl
 
     except Exception:
         raise
-    finally:
-        if srows:
-            del srows
-        if outputrow:
-            del outputrow
-        if irows:
-            del irows
 
 
 def limit_cores(pair_tbl, stats_tbl):
