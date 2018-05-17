@@ -380,7 +380,7 @@ def limit_cores(pair_tbl, stats_tbl):
     try:
         lm_util.gprint("\nLIMITING CORE PAIRS BASED UPON CLIMATE "
                        "THRESHOLD")
-
+       # Crea vista de tabla temporal https://pro.arcgis.com/es/pro-app/tool-reference/data-management/make-table-view.htm
         arcpy.MakeTableView_management(pair_tbl, pair_vw)
         arcpy.MakeTableView_management(stats_tbl, stats_vw)
 
@@ -392,18 +392,28 @@ def limit_cores(pair_tbl, stats_tbl):
         # Calculate difference of 2 std
         lm_util.gprint("Calculating difference of 2 std")
         diffu_2std = "diffu_2std"
+        #Agregar campo https://pro.arcgis.com/es/pro-app/tool-reference/data-management/add-field.htm
         arcpy.AddField_management(pair_vw, diffu_2std, "Float", "", "",
                                   "", "", "NULLABLE")
+        #Calcular campo   http://desktop.arcgis.com/es/arcmap/10.3/tools/data-management-toolbox/calculate-field.htm
         arcpy.CalculateField_management(pair_vw, diffu_2std,
                                         "abs(!frumin2std! - !toumin2std!)",
                                         "PYTHON_9.3")
 
         # Filter distance table based on inputed threshold and delete rows
         lm_util.gprint("Filtering table based on threshold")
+
+        #https://pro.arcgis.com/es/pro-app/arcpy/functions/addfielddelimiters.htm
         diffu2std_fld = arcpy.AddFieldDelimiters(pair_vw, diffu_2std)
         expression = diffu2std_fld + " <= " + str(cc_env.climate_threshold)
+
+        # Seleccionar capa por atributo
+        #https://pro.arcgis.com/es/pro-app/tool-reference/data-management/select-layer-by-attribute.htm
         arcpy.SelectLayerByAttribute_management(pair_vw, "NEW_SELECTION",
                                                 expression)
+
+        # Obtener No. de filas
+        #http://desktop.arcgis.com/es/arcmap/10.3/tools/data-management-toolbox/get-count.htm
         rows_del = int(arcpy.GetCount_management(pair_vw).getOutput(0))
         if rows_del > 0:
             arcpy.DeleteRows_management(pair_vw)
@@ -430,6 +440,7 @@ def add_stats(stats_vw, core_id, fld_pre, table_vw, join_col):
                               "", "", "NULLABLE")
 
     # Join distance table to zonal stats table
+    #https://pro.arcgis.com/es/pro-app/tool-reference/data-management/add-attribute-index.htm
     arcpy.AddIndex_management(table_vw, FR_COL, "fridx", "NON_UNIQUE",
                               "ASCENDING")
     arcpy.AddIndex_management(table_vw, TO_COL, "toidx", "NON_UNIQUE",
@@ -438,6 +449,7 @@ def add_stats(stats_vw, core_id, fld_pre, table_vw, join_col):
                               "ASCENDING")
     arcpy.AddJoin_management(table_vw, join_col, stats_vw, core_id)
 
+    #https://pro.arcgis.com/es/pro-app/arcpy/functions/describe.htm
     tbl_name = arcpy.Describe(table_vw).baseName
     stats_tbl_nm = arcpy.Describe(stats_vw).baseName
 
