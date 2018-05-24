@@ -177,12 +177,16 @@ def run_analysis():
     # - Minority
     # - Median
     #  FID | media | sd | min | max | ...
+    cc_cores_gdf = gpd.read_file(cc_env.prj_core_fc)
+    cc_cores_gdf = cc_cores_gdf[[cc_env.core_fld, "geometry"]]
     climate_stats = pd.DataFrame(zonal_stats(
-        cc_env.prj_core_fc,
+        cc_cores_gdf.geometry,
         cc_env.prj_climate_rast,
         stats=VALID_STATS
     ))
-    climate_stats.to_csv(zonal_tbl)
+    climate_stats = pd.concat([cc_cores_gdf, climate_stats],
+        axis=1)
+    climate_stats.drop(["geometry"], axis=1).to_csv(zonal_tbl)
 
 
     # Create core pairings table and limit based upon climate threshold
@@ -342,8 +346,8 @@ def create_pair_tbl(climate_stats):
     """Create core pair table and limit to climate threshold """
     cpair_tbl = pair_cores("corepairs.csv")
 #  Crea tabla con ID de los parches y su valor correspondiente de climate_stats()
-    if int(arcpy.GetCount_management(cpair_tbl).getOutput(0)) > 0:
-        limit_cores(cpair_tbl, climate_stats)
+    if  cpair_tbl.shape[0] > 0:
+        cpair_tbl = limit_cores(cpair_tbl, climate_stats)
     return cpair_tbl
 # Devuelve el número total de filas de una tabla:
 # https://pro.arcgis.com/es/pro-app/tool-reference/data-management/get-count.htm
@@ -354,8 +358,11 @@ def pair_cores(cpair_tbl):
         logger.info("\nCREATING CORE PAIRINGS TABLE")
 
         cores_gdf = gpd.read_file(cc_env.prj_core_fc)
+        cores_gdf.head()
 
-        cores_list = cores_gdf[cc_env.core_fld].tolist().sort()
+        cores_list = cores_gdf[cc_env.core_fld].tolist()
+        cores_list.sort()
+
         cores_product = list(itertools.combinations(cores_list, 2))
 
         logger.info("There are " + str(len(cores_list)) + " unique "
@@ -365,7 +372,7 @@ def pair_cores(cpair_tbl):
         pair_df.columns = ("FR_COL", "TO_COL")
         pair_df.to_csv(cpair_tbl)
 
-        return cpair_tbl
+        return pair_df
 
     except Exception:
         raise
@@ -373,56 +380,37 @@ def pair_cores(cpair_tbl):
 
 def limit_cores(pair_tbl, stats_tbl):
     """Limit core pairs based upon climate threshold"""
-    pair_vw = "dist_tbvw"
-    stats_vw = "stats_tbvw"
-    core_id = cc_env.core_fld.upper()
+    #pair_vw = "dist_tbvw"
+    #stats_vw = "stats_tbvw"
+    core_id = cc_env.core_fld #.upper()
 
     try:
-        lm_util.gprint("\nLIMITING CORE PAIRS BASED UPON CLIMATE "
+        logger.info("\nLIMITING CORE PAIRS BASED UPON CLIMATE "
                        "THRESHOLD")
-       # Crea vista de tabla temporal https://pro.arcgis.com/es/pro-app/tool-reference/data-management/make-table-view.htm
-        arcpy.MakeTableView_management(pair_tbl, pair_vw)
-        arcpy.MakeTableView_management(stats_tbl, stats_vw)
 
         # Add basic stats to distance table
-        lm_util.gprint("Joining zonal statistics to pairings table")
-        add_stats(stats_vw, core_id, "fr", pair_vw, TO_COL)
-        add_stats(stats_vw, core_id, "to", pair_vw, FR_COL)
+        logger.info("Joining zonal statistics to pairings table")
+        pair_tbl_fr = add_stats(stats_tbl, core_id, "fr", pair_tbl, "TO_COL")
+        pair_tbl_to = add_stats(stats_tbl, core_id, "to", pair_tbl, "FR_COL")
+        pair_tbl = pd.merge(pair_tbl_fr, pair_tbl_to, on=["FR_COL", "TO_COL"])
 
         # Calculate difference of 2 std
-        lm_util.gprint("Calculating difference of 2 std")
-        diffu_2std = "diffu_2std"
-        #Agregar campo https://pro.arcgis.com/es/pro-app/tool-reference/data-management/add-field.htm
-        arcpy.AddField_management(pair_vw, diffu_2std, "Float", "", "",
-                                  "", "", "NULLABLE")
-        #Calcular campo   http://desktop.arcgis.com/es/arcmap/10.3/tools/data-management-toolbox/calculate-field.htm
-        arcpy.CalculateField_management(pair_vw, diffu_2std,
-                                        "abs(!frumin2std! - !toumin2std!)",
-                                        "PYTHON_9.3")
+        logger.info("Calculating difference of 2 std")
+        pair_tbl["diffu_2std"] = np.abs(
+            pair_tbl["frumin2std"] - pair_tbl["toumin2std"]
+        )
 
         # Filter distance table based on inputed threshold and delete rows
-        lm_util.gprint("Filtering table based on threshold")
+        logger.info("Filtering table based on threshold")
+        pair_tbl_filtered = pair_tbl[pair_tbl["diffu_2std"] <= 1]
 
-        #https://pro.arcgis.com/es/pro-app/arcpy/functions/addfielddelimiters.htm
-        diffu2std_fld = arcpy.AddFieldDelimiters(pair_vw, diffu_2std)
-        expression = diffu2std_fld + " <= " + str(cc_env.climate_threshold)
-
-        # Seleccionar capa por atributo
-        #https://pro.arcgis.com/es/pro-app/tool-reference/data-management/select-layer-by-attribute.htm
-        arcpy.SelectLayerByAttribute_management(pair_vw, "NEW_SELECTION",
-                                                expression)
-
-        # Obtener No. de filas
-        #http://desktop.arcgis.com/es/arcmap/10.3/tools/data-management-toolbox/get-count.htm
-        rows_del = int(arcpy.GetCount_management(pair_vw).getOutput(0))
-        if rows_del > 0:
-            arcpy.DeleteRows_management(pair_vw)
-        lm_util.gprint(str(rows_del) + " rows deleted")
+        logger.info("{} rows deleted".format(
+            pair_tbl.shape[0]-pair_tbl_filtered.shape[0]
+        ))
+        return pair_tbl_filtered
 
     except Exception:
         raise
-    finally:
-        cc_util.delete_features([stats_vw, pair_vw])
 
 
 def add_stats(stats_vw, core_id, fld_pre, table_vw, join_col):
@@ -431,44 +419,13 @@ def add_stats(stats_vw, core_id, fld_pre, table_vw, join_col):
     tmp_std = fld_pre + "_tmp_std"
     umin2std = fld_pre + "umin2std"
 
-    # Add fields to stick table - has to be done before join
-    arcpy.AddField_management(table_vw, tmp_mea, "Float", "", "",
-                              "", "", "NULLABLE")
-    arcpy.AddField_management(table_vw, tmp_std, "Float", "", "",
-                              "", "", "NULLABLE")
-    arcpy.AddField_management(table_vw, umin2std, "Float", "", "",
-                              "", "", "NULLABLE")
+    stats_vw = stats_vw[[core_id, 'mean', 'std']]
+    stats_vw.columns = [join_col, tmp_mea, tmp_std]
+    stats_vw[umin2std] = stats_vw[tmp_mea] - 2*stats_vw[tmp_std]
 
-    # Join distance table to zonal stats table
-    #https://pro.arcgis.com/es/pro-app/tool-reference/data-management/add-attribute-index.htm
-    arcpy.AddIndex_management(table_vw, FR_COL, "fridx", "NON_UNIQUE",
-                              "ASCENDING")
-    arcpy.AddIndex_management(table_vw, TO_COL, "toidx", "NON_UNIQUE",
-                              "ASCENDING")
-    arcpy.AddIndex_management(stats_vw, core_id, "coreidx", "UNIQUE",
-                              "ASCENDING")
-    arcpy.AddJoin_management(table_vw, join_col, stats_vw, core_id)
+    join_tbl = pd.merge(table_vw, stats_vw, on = join_col)
 
-    #https://pro.arcgis.com/es/pro-app/arcpy/functions/describe.htm
-    tbl_name = arcpy.Describe(table_vw).baseName
-    stats_tbl_nm = arcpy.Describe(stats_vw).baseName
-
-    # Insert values into fields
-    mean_value = "!" + stats_tbl_nm + ".MEAN" + "!"
-    std_value = "!" + stats_tbl_nm + ".STD" + "!"
-    mea_fld = "!" + tbl_name + "." + tmp_mea + "!"
-    std_fld = "!" + tbl_name + "." + tmp_std + "!"
-
-    arcpy.CalculateField_management(table_vw, tmp_mea, mean_value,
-                                    "PYTHON_9.3")
-    arcpy.CalculateField_management(table_vw, tmp_std, std_value,
-                                    "PYTHON_9.3")
-    expression = mea_fld + " - " + std_fld + " - " + std_fld
-    arcpy.CalculateField_management(table_vw, umin2std, expression,
-                                    "PYTHON_9.3")
-
-    # Remove join
-    arcpy.RemoveJoin_management(table_vw, stats_tbl_nm)
+    return join_tbl
 
 
 def process_pairings(pairings):
