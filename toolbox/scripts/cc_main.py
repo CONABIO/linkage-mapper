@@ -186,18 +186,16 @@ def run_analysis():
     ))
     climate_stats = pd.concat([cc_cores_gdf, climate_stats],
         axis=1)
-    climate_stats.drop(["geometry"], axis=1).to_csv(zonal_tbl)
+    climate_stats.drop(["geometry"], axis=1).to_csv(zonal_tbl, index=False)
 
 
     # Create core pairings table and limit based upon climate threshold
     core_pairings = create_pair_tbl(climate_stats)
 
     # Generate link table, calculate CWD and run Linkage Mapper
-    if int(arcpy.GetCount_management(core_pairings).getOutput(0)) == 0:
-        lm_util.warn("\nNo core pairs within climate threshold. "
+    if core_parings.shape[0] == 0:
+        logger.warning("\nNo core pairs within climate threshold. "
                          "Program will end")}
-# Cuenta el numero de filas de la tabla core_parings.
-# https://pro.arcgis.com/es/pro-app/tool-reference/data-management/get-count.htm
     else:
         # Process pairings and generate link table
         grass_cores = process_pairings(core_pairings)
@@ -343,17 +341,39 @@ def cc_copy_inputs():
 
 
 def create_pair_tbl(climate_stats):
-    """Create core pair table and limit to climate threshold """
+    """Create core pair table and limit to climate threshold.
+
+    Parameters
+    ----------
+    climate_stats: pd.DataFrame
+        Dataframe with statistics of cores.
+
+    Returns
+    -------
+    pd.DataFrame
+        Core pair table with cores stats and filtered by threshold.
+    """
     cpair_tbl = pair_cores("corepairs.csv")
-#  Crea tabla con ID de los parches y su valor correspondiente de climate_stats()
+
     if  cpair_tbl.shape[0] > 0:
         cpair_tbl = limit_cores(cpair_tbl, climate_stats)
+        cpair_tbl.to_csv("corepairs.csv", index=False)
     return cpair_tbl
-# Devuelve el número total de filas de una tabla:
-# https://pro.arcgis.com/es/pro-app/tool-reference/data-management/get-count.htm
+
 
 def pair_cores(cpair_tbl):
-    """Create table with all possible core to core combinations"""
+    """Create pandas.DataFrame with all possible core to core combinations.
+
+    Parameters
+    ----------
+    cpair_tbl: str
+        Filename to save the core pairs table.
+
+    Returns
+    -------
+    pd.DataFrame
+        Dataframe with two columns: FROM_COL and TO_COL which are the core pairs.
+    """
     try:
         logger.info("\nCREATING CORE PAIRINGS TABLE")
 
@@ -369,8 +389,8 @@ def pair_cores(cpair_tbl):
                        "cores and " + str(len(cores_product)) + " pairings")
 
         pair_df = pd.DataFrame.from_records(cores_product)
-        pair_df.columns = ("FR_COL", "TO_COL")
-        pair_df.to_csv(cpair_tbl)
+        pair_df.columns = (FR_COL, TO_COL)
+        pair_df.to_csv(cpair_tbl, index=False)
 
         return pair_df
 
@@ -390,9 +410,9 @@ def limit_cores(pair_tbl, stats_tbl):
 
         # Add basic stats to distance table
         logger.info("Joining zonal statistics to pairings table")
-        pair_tbl_fr = add_stats(stats_tbl, core_id, "fr", pair_tbl, "TO_COL")
-        pair_tbl_to = add_stats(stats_tbl, core_id, "to", pair_tbl, "FR_COL")
-        pair_tbl = pd.merge(pair_tbl_fr, pair_tbl_to, on=["FR_COL", "TO_COL"])
+        pair_tbl_fr = add_stats(stats_tbl, core_id, "fr", pair_tbl, TO_COL)
+        pair_tbl_to = add_stats(stats_tbl, core_id, "to", pair_tbl, FR_COL)
+        pair_tbl = pd.merge(pair_tbl_fr, pair_tbl_to, on=[FR_COL, TO_COL])
 
         # Calculate difference of 2 std
         logger.info("Calculating difference of 2 std")
@@ -434,7 +454,7 @@ def process_pairings(pairings):
     Requires ArcInfo license.
 
     """
-    lm_util.gprint("\nLIMITING CORE PAIRS BASED ON INPUTED DISTANCES AND "
+    logger.info("\nLIMITING CORE PAIRS BASED ON INPUTED DISTANCES AND "
                    "GENERATING LINK TABLE")
     # Simplify cores based on booolean in config
     if cc_env.simplify_cores:
@@ -449,20 +469,18 @@ def process_pairings(pairings):
 
 def pairs_from_list(pairings):
     """Get list of core pairings and 'from cores'"""
-    frm_cores = set()
-    core_pairs = []
-    srows = arcpy.SearchCursor(pairings, "", "", FR_COL + "; " + TO_COL)
-    for srow in srows:
-        from_core = srow.getValue(FR_COL)
-        to_core = str(srow.getValue(TO_COL))
-        frm_cores.add(from_core)
-        core_pairs.append([str(from_core), to_core])
-    frm_cores = [str(x) for x in frm_cores]
+    frm_cores = pairings[FR_COL].unique().tolist()
+    core_pairs = list(zip(
+        pairings[FR_COL],
+        pairings[TO_COL]
+    ))
+
     return core_pairs, frm_cores
 
 
 def create_lnk_tbl(corefc, core_pairs, frm_cores):
     """Create link table file and limit based on near table results"""
+    cores_gdf = gpd.read_file(corefc)
     fcore_vw = "fcore_vw"
     tcore_vw = "tcore_vw"
     jtocore_fn = cc_env.core_fld[:8] + "_1"  # dbf field length
@@ -472,51 +490,63 @@ def create_lnk_tbl(corefc, core_pairs, frm_cores):
     link_tbl, srow, srows = None, None, None
 
     try:
-        link_tbl = open(link_file, 'wb')
-        writer = csv.writer(link_tbl, delimiter=',')
-        headings = ["# link", "coreId1", "coreId2", "cluster1", "cluster2",
-                    "linkType", "eucDist", "lcDist", "eucAdj", "cwdAdj"]
-        writer.writerow(headings)
+        # link_tbl = open(link_file, 'wb')
+        # writer = csv.writer(link_tbl, delimiter=',')
+        # headings = ["# link", "coreId1", "coreId2", "cluster1", "cluster2",
+        #             "linkType", "eucDist", "lcDist", "eucAdj", "cwdAdj"]
+        # writer.writerow(headings)
 
         core_list = set()
         no_cores = str(len(frm_cores))
         i = 1
 
-        coreid_fld = arcpy.AddFieldDelimiters(corefc, cc_env.core_fld)
+        # coreid_fld = arcpy.AddFieldDelimiters(corefc, cc_env.core_fld)
+        coreid_fld = cc_env.core_fld
 
         for core_no, frm_core in enumerate(frm_cores):
             # From cores
-            expression = coreid_fld + " = " + frm_core
-            arcpy.MakeFeatureLayer_management(corefc, fcore_vw, expression)
-
+            from_cores_gdf = cores_gdf[
+                    cores_gdf[coreid_fld] == frm_cores[2]
+                ].reset_index()
             # To cores
             to_cores_lst = [x[1] for x in core_pairs if frm_core == x[0]]
-            to_cores = ', '.join(to_cores_lst)
-            expression = coreid_fld + " in (" + to_cores + ")"
-            arcpy.MakeFeatureLayer_management(corefc, tcore_vw, expression)
-            lm_util.gprint("Calculating Euclidean distance/s from Core " +
-                           frm_core + " to " + str(len(to_cores_lst)) +
-                           " other cores" + " (" + str(core_no + 1) + "/" +
-                           no_cores + ")")
+            # to_cores = ', '.join(to_cores_lst)
+            # expression = coreid_fld + " in (" + to_cores + ")"
+            # arcpy.MakeFeatureLayer_management(corefc, tcore_vw, expression)
+            to_cores_gdf = cores_gdf[
+                cores_gdf[coreid_fld].isin(to_cores_lst)].reset_index()
+            # lm_util.gprint("Calculating Euclidean distance/s from Core " +
+            #                frm_core + " to " + str(len(to_cores_lst)) +
+            #                " other cores" + " (" + str(core_no + 1) + "/" +
+            #                no_cores + ")")
 
             # Generate near table for these core pairings
-            arcpy.GenerateNearTable_analysis(
-                fcore_vw, tcore_vw, near_tbl,
-                cc_env.max_euc_dist, "NO_LOCATION", "NO_ANGLE", "ALL")
-
+            # arcpy.GenerateNearTable_analysis(
+                # fcore_vw, tcore_vw, near_tbl,
+                # cc_env.max_euc_dist, "NO_LOCATION", "NO_ANGLE", "ALL")
+            near_tbl = pd.DataFrame({
+                'NEAR_FID': to_cores_gdf[coreid_fld],
+                'NEAR_DIST': to_cores_gdf.geometry.apply(
+                    lambda x: from_cores_gdf.distance(x)).squeeze()
+                })
+            near_tbl['IN_FID'] = frm_cores[2]
+            near_tbl_filtered = near_tbl[
+                (near_tbl['NEAR_DIST'] > cc_env.min_euc_dist) &
+                (near_tbl['NEAR_DIST'] < cc_env.max_euc_dist)
+            ]
             # Join near table to core table
-            arcpy.JoinField_management(near_tbl, "IN_FID", corefc,
-                                       "FID", cc_env.core_fld)
-            arcpy.JoinField_management(near_tbl, "NEAR_FID", corefc,
-                                       "FID", cc_env.core_fld)
+            # arcpy.JoinField_management(near_tbl, "IN_FID", corefc,
+                                       # "FID", cc_env.core_fld)
+            # arcpy.JoinField_management(near_tbl, "NEAR_FID", corefc,
+                                       # "FID", cc_env.core_fld)
 
             # Limit pairings based on inputed Euclidean distances
-            srow, srows = None, None
-            euc_dist_fld = arcpy.AddFieldDelimiters(near_tbl, "NEAR_DIST")
-            expression = (euc_dist_fld + " > " + str(cc_env.min_euc_dist))
-            srows = arcpy.SearchCursor(near_tbl, expression, "",
-                                       jtocore_fn + "; NEAR_DIST",
-                                       jtocore_fn + " A; NEAR_DIST A")
+            # srow, srows = None, None
+            # euc_dist_fld = arcpy.AddFieldDelimiters(near_tbl, "NEAR_DIST")
+            # expression = (euc_dist_fld + " > " + str(cc_env.min_euc_dist))
+            # srows = arcpy.SearchCursor(near_tbl, expression, "",
+            #                            jtocore_fn + "; NEAR_DIST",
+            #                            jtocore_fn + " A; NEAR_DIST A")
 
             # Process near table and output into a link table
             srow = srows.next()
@@ -548,14 +578,16 @@ def create_lnk_tbl(corefc, core_pairs, frm_cores):
 
 def simplify_corefc():
     """Simplify core feature class"""
-    lm_util.gprint("Simplifying polygons to speed up core pair "
+    logger.info("Simplifying polygons to speed up core pair "
                    "distance calculations")
     corefc = cc_env.core_simp
-    climate_rast = arcpy.Raster(cc_env.prj_climate_rast)
-    tolerance = climate_rast.meanCellHeight / 3
-    arcpy.cartography.SimplifyPolygon(
-        cc_env.prj_core_fc, corefc,
-        "POINT_REMOVE", tolerance, "#", "NO_CHECK")
+    climate_rast = rasterio.open(cc_env.prj_climate_rast)
+    tolerance = np.abs(climate_rast.affine[4]) / 3
+    cc_cores_gdf = gpd.read_file(cc_env.prj_core_fc)
+
+    cc_cores_gdf.geometry = cc_cores_gdf.simplify(tolerance=tolerance)
+    cc_cores_gdf.to_file(corefc)
+
     return corefc
 
 
